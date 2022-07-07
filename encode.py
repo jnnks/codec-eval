@@ -19,11 +19,16 @@ def run_ffmpeg(args):
         "ffmpeg -y -loglevel panic -hide_banner " + args,
         shell=True, check=True)
 
-def get_kbits(file_path):
+def run_rav1e(bitrate, in_file, out_file):
+    subprocess.run(
+        f"cd rav1e; RUSTFLAGS=-Awarnings cargo run --quiet --release -- --quiet -y --bitrate {bitrate} --output ../{out_file} ../{in_file}",
+        shell=True, check=True)
+
+def get_kbits(norm_file, comp_file):
     """calculate kbits per seconds of a video file"""
-    file_size = stat(file_path).st_size
+    file_size = stat(comp_file).st_size
     proc = subprocess.run(
-        f'ffprobe -i {file_path} -show_entries format=duration -v quiet -of csv="p=0"',
+        f'ffprobe -i {norm_file} -show_entries format=duration -v quiet -of csv="p=0"',
         shell=True, capture_output=True, check=True)
     video_len = float(proc.stdout.decode('ascii')[:-1])
     return int((file_size / video_len) * 8)
@@ -51,12 +56,12 @@ for (root, file_name) in input_files:
         # encoding loop
         #   keep adjusting ffmpeg bitrate until actual bitrage matches to 5% 
         current_bitrate = TARGET_BITRATE
+        out_file = f"{OUTPUT_DIR}/{splitext(file_name)[0]}_{encoder}.mkv"
         while True:
-            out_file = f"{OUTPUT_DIR}/{splitext(file_name)[0]}_{encoder}.mkv"
             print(f"    {out_file} with {current_bitrate}kbps")
 
             run_ffmpeg(f"-i {normalized_file} -strict -2 -c:v {encoder} -b:v {str(current_bitrate)}K -maxrate {str(current_bitrate)}K -bufsize {str(current_bitrate)}K -an {out_file}")
-            kbits = get_kbits(out_file) / 1000
+            kbits = get_kbits(normalized_file, out_file) / 1000
             print(f"      got {str(kbits)}kbps")
             
             rel_diff = TARGET_BITRATE / kbits
@@ -66,3 +71,21 @@ for (root, file_name) in input_files:
             
             # adjust ffmpeg input bitrate
             current_bitrate = int(current_bitrate * rel_diff)
+
+    print(f"  rav1e")
+    current_bitrate = TARGET_BITRATE
+    out_file = f"{OUTPUT_DIR}/{splitext(file_name)[0]}_rav1e.ivf"
+    while True:
+        print(f"    {out_file} with {current_bitrate}kbps")
+        run_rav1e(current_bitrate, normalized_file, out_file)
+        print(out_file)
+        kbits = get_kbits(normalized_file, out_file) / 1000
+        print(f"      got {str(kbits)}kbps")
+
+        rel_diff = TARGET_BITRATE / kbits
+        if abs(1 - rel_diff) <= 0.05:
+            # actual bitrate within 5% of target bitrate
+            break
+
+        # adjust ffmpeg input bitrate
+        current_bitrate = int(current_bitrate * rel_diff)
